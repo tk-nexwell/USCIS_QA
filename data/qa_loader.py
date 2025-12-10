@@ -4,6 +4,7 @@ Handles importing questions from Excel files.
 """
 import pandas as pd
 import sqlite3
+import re
 from pathlib import Path
 from logic.db import get_db_connection, init_database
 
@@ -35,35 +36,74 @@ def normalize_excel_data(df_questions, df_answers=None):
             if '.' in col_name or len(col_name) > 15:
                 category = col_name
         
-        # Match rows by index (same row number = same question/answer pair)
-        max_rows = min(len(df_questions), len(df_answers))
-        for idx in range(max_rows):
-            question_text = None
-            answer_text = None
-            
+        # Build dictionaries keyed by question/answer number for proper matching
+        questions_dict = {}
+        answers_dict = {}
+        
+        # Extract questions with their numbers
+        for idx in range(len(df_questions)):
             if question_col is not None:
                 q_val = df_questions.iloc[idx][question_col]
                 if pd.notna(q_val):
                     q_str = str(q_val).strip()
                     # Skip if it's just a number (row number)
+                    # Skip if it starts with a single letter and period (section titles like "A. ", "B. ")
                     if q_str and not q_str.isdigit():
-                        question_text = q_str
-            
+                        # Check if it's a section title (starts with single letter + period + space)
+                        if not re.match(r'^[A-Z]\.\s', q_str):
+                            # Extract question number (e.g., "124." from "124. The nation's...")
+                            q_num_match = re.match(r'^(\d+)\.', q_str)
+                            if q_num_match:
+                                q_num = int(q_num_match.group(1))
+                                questions_dict[q_num] = q_str
+        
+        # Extract answers with their numbers
+        for idx in range(len(df_answers)):
             if answer_col is not None:
                 a_val = df_answers.iloc[idx][answer_col]
                 if pd.notna(a_val):
                     a_str = str(a_val).strip()
                     # Skip if it's just a number or empty
                     if a_str and not a_str.isdigit():
-                        answer_text = a_str
-            
-            # Only add if we have both question and answer
-            if question_text and answer_text:
-                questions.append({
-                    'question_text': question_text,
-                    'answer_text': answer_text,
-                    'category': category
-                })
+                        # Extract answer number - can be at start "124." or at end "— A125" or "A125"
+                        # Try pattern at end first (e.g., "— A125" or "A125")
+                        a_num_match = re.search(r'[—\-]\s*A(\d+)$|A(\d+)$|^(\d+)\.', a_str)
+                        if a_num_match:
+                            # Get the first non-None group
+                            a_num = int(a_num_match.group(1) or a_num_match.group(2) or a_num_match.group(3))
+                            answers_dict[a_num] = a_str
+        
+        # Match questions and answers by number
+        # Verify all questions have matching answers
+        missing_answers = []
+        for q_num in sorted(questions_dict.keys()):
+            if q_num in answers_dict:
+                # Double-check the answer number matches
+                a_text = answers_dict[q_num]
+                a_num_match = re.search(r'[—\-]\s*A(\d+)$|A(\d+)$|^(\d+)\.', a_text)
+                if a_num_match:
+                    a_num = int(a_num_match.group(1) or a_num_match.group(2) or a_num_match.group(3))
+                    if a_num == q_num:
+                        questions.append({
+                            'question_text': questions_dict[q_num],
+                            'answer_text': answers_dict[q_num],
+                            'category': category
+                        })
+                    else:
+                        # Answer number doesn't match - skip this pair
+                        missing_answers.append(f"Q{q_num} has answer with number {a_num}")
+                else:
+                    # Couldn't extract answer number - still add it but log warning
+                    questions.append({
+                        'question_text': questions_dict[q_num],
+                        'answer_text': answers_dict[q_num],
+                        'category': category
+                    })
+            else:
+                missing_answers.append(f"Q{q_num} has no matching answer")
+        
+        if missing_answers:
+            raise ValueError(f"Mismatched questions/answers: {', '.join(missing_answers[:10])}")
         
         return questions
     

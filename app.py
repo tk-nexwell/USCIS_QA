@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import re
 from pathlib import Path
 
 from logic.db import (
@@ -316,10 +317,15 @@ else:
         else:
             question['fail_rate'] = 0.0
         
+        # Extract question number from text for display (more reliable than DB ID)
+        import re
+        q_num_match = re.search(r'^(\d+)\.', question['question_text'])
+        display_q_num = int(q_num_match.group(1)) if q_num_match else question['id']
+        
         # Display question number and stats
         col_info1, col_info2, col_info3 = st.columns(3)
         with col_info1:
-            st.metric("Question #", question['id'])
+            st.metric("Question #", display_q_num)
         with col_info2:
             st.metric("Times Seen", question['times_seen'])
         with col_info3:
@@ -340,6 +346,15 @@ else:
         
         # Display answer if shown
         if st.session_state.show_answer:
+            # Verify answer number matches question number
+            a_num_match = re.search(r'[—\-]\s*A(\d+)$|A(\d+)$|^(\d+)\.', question['answer_text'])
+            a_num = int(a_num_match.group(1) or a_num_match.group(2) or a_num_match.group(3)) if a_num_match else None
+            q_num_match = re.search(r'^(\d+)\.', question['question_text'])
+            q_num = int(q_num_match.group(1)) if q_num_match else None
+            
+            if a_num and q_num and a_num != q_num:
+                st.error(f"⚠️ Warning: Question {q_num} has answer {a_num}. Please reload the database.")
+            
             st.markdown('<div class="answer-box">', unsafe_allow_html=True)
             st.markdown("### Answer:")
             st.markdown(question['answer_text'])
